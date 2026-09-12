@@ -1,4 +1,4 @@
-// ===== 1. API KEY (Safe: browser లో మాత్రమే) =====
+// ===== 1. API KEY =====
 let API_KEY = localStorage.getItem('jarvis_key');
 
 if (!API_KEY) {
@@ -10,7 +10,7 @@ if (!API_KEY) {
 }
 
 
-// ===== 2. SMART MODELS (ఒకటి fail అయితే next auto try) =====
+// ===== 2. SMART MODELS =====
 const MODELS = [
     "gemini-3.6-flash",
     "gemini-flash-latest"
@@ -21,8 +21,133 @@ const input = document.getElementById('msg');
 const micBtn = document.getElementById('mic-btn');
 
 
-// ===== 3. GEMINI BRAIN (auto-fallback) =====
-async function callGemini(p) {
+// ======================================================
+// 🧠 J.A.R.V.I.S BRAIN
+// ======================================================
+
+const BRAIN_KEY = "jarvis_brain_memory";
+
+let brainMemory = JSON.parse(
+    localStorage.getItem(BRAIN_KEY) || "[]"
+);
+
+
+// Save memory
+function saveToBrain(role, message) {
+
+    brainMemory.push({
+        role: role,
+        message: message,
+        time: new Date().toISOString()
+    });
+
+    // Keep latest 50 messages
+    if (brainMemory.length > 50) {
+        brainMemory = brainMemory.slice(-50);
+    }
+
+    localStorage.setItem(
+        BRAIN_KEY,
+        JSON.stringify(brainMemory)
+    );
+}
+
+
+// Get memory
+function getBrainMemory() {
+    return brainMemory;
+}
+
+
+// Clear memory
+function clearBrain() {
+
+    brainMemory = [];
+
+    localStorage.removeItem(BRAIN_KEY);
+
+    if (chat) {
+        chat.innerHTML = "";
+    }
+
+    console.log("🧠 J.A.R.V.I.S Brain cleared.");
+}
+
+
+// Restore old conversation
+function restoreBrain() {
+
+    if (!chat) return;
+
+    chat.innerHTML = "";
+
+    brainMemory.forEach(item => {
+
+        if (item.role === "user") {
+
+            add(
+                "YOU: " + item.message,
+                "user"
+            );
+
+        } else if (item.role === "assistant") {
+
+            add(
+                "J.A.R.V.I.S: " + item.message,
+                "ai"
+            );
+        }
+
+    });
+}
+
+
+// ======================================================
+// 🧠 CREATE MEMORY CONTEXT FOR GEMINI
+// ======================================================
+
+function buildBrainContext() {
+
+    if (brainMemory.length === 0) {
+        return "";
+    }
+
+    const recentMemory =
+        brainMemory.slice(-20);
+
+    let context =
+        "\n\n--- J.A.R.V.I.S MEMORY ---\n";
+
+    recentMemory.forEach(item => {
+
+        if (item.role === "user") {
+
+            context +=
+                "USER: " +
+                item.message +
+                "\n";
+
+        } else {
+
+            context +=
+                "J.A.R.V.I.S: " +
+                item.message +
+                "\n";
+        }
+    });
+
+    context +=
+        "--- END MEMORY ---\n\n";
+
+    return context;
+}
+
+
+// ======================================================
+// 3. GEMINI
+// ======================================================
+
+async function callGemini(prompt) {
 
     let lastErr;
 
@@ -43,164 +168,317 @@ async function callGemini(p) {
                     },
 
                     body: JSON.stringify({
+
                         contents: [
+
                             {
                                 parts: [
+
                                     {
-                                        text: p
+                                        text:
+                                            "You are J.A.R.V.I.S, a helpful AI assistant. " +
+                                            "Use the memory provided to maintain continuity. " +
+                                            "Do not claim to remember something unless it is in the memory.\n\n" +
+                                            buildBrainContext() +
+                                            "\nCURRENT USER MESSAGE:\n" +
+                                            prompt
                                     }
+
                                 ]
                             }
+
                         ]
+
                     })
                 }
             );
 
+
             const data = await res.json();
+
 
             if (data.error) {
 
-                lastErr = new Error(data.error.message);
+                lastErr =
+                    new Error(
+                        data.error.message
+                    );
+
 
                 if (
                     /high demand|temporar|quota|rate|unavailable|no longer available|deprecated/i
-                    .test(data.error.message)
+                        .test(data.error.message)
                 ) {
+
                     continue;
                 }
 
                 throw lastErr;
             }
 
-            return data.candidates[0].content.parts[0].text;
 
-        } catch (e) {
+            return data.candidates[0]
+                .content.parts[0].text;
+
+        }
+
+        catch (e) {
 
             lastErr = e;
         }
     }
 
+
     throw lastErr;
 }
 
 
+// ======================================================
+// 4. ASK GEMINI
+// ======================================================
+
 async function askGemini(p) {
 
-    add('J.A.R.V.I.S: Thinking...', 'ai');
+    add(
+        "J.A.R.V.I.S: Thinking...",
+        "ai"
+    );
+
 
     try {
 
-        const reply = await callGemini(p);
+        const reply =
+            await callGemini(p);
 
-        chat.lastChild.innerText = 'J.A.R.V.I.S: ' + reply;
 
-        speak(reply); // reply వచ్చిన వెంటనే VOICE
+        // Replace Thinking message
+        chat.lastChild.innerText =
+            "J.A.R.V.I.S: " + reply;
 
-    } catch (e) {
+
+        // 🧠 SAVE AI RESPONSE
+        saveToBrain(
+            "assistant",
+            reply
+        );
+
+
+        // VOICE
+        speak(reply);
+
+    }
+
+    catch (e) {
 
         chat.lastChild.innerText =
-            'J.A.R.V.I.S: ERROR - ' + e.message;
+            "J.A.R.V.I.S: ERROR - " +
+            e.message;
     }
 }
 
 
-// ===== 4. SPEECH RECOGNITION (వినడం) =====
+// ======================================================
+// 5. SPEECH RECOGNITION
+// ======================================================
 
 const SR =
     window.SpeechRecognition ||
     window.webkitSpeechRecognition;
 
-const rec = new SR();
 
-rec.lang = 'en-US'; // Telugu కి 'te-IN'
-
-
-rec.onresult = (e) => {
-
-    const t = e.results[0][0].transcript;
-
-    add('YOU: ' + t, 'user');
-
-    askGemini(t);
-};
+let rec = null;
 
 
-micBtn.onclick = () => {
+if (SR) {
 
-    rec.start();
+    rec = new SR();
 
-    micBtn.innerText = 'LISTENING...';
-};
+    rec.lang = 'en-US';
 
+    rec.onresult = (e) => {
 
-rec.onend = () => {
-
-    micBtn.innerText = '🎤';
-};
+        const t =
+            e.results[0][0].transcript;
 
 
-// ===== 5. TEXT-TO-SPEECH (మాట్లాడటం) =====
+        add(
+            "YOU: " + t,
+            "user"
+        );
+
+
+        // 🧠 SAVE USER MESSAGE
+        saveToBrain(
+            "user",
+            t
+        );
+
+
+        askGemini(t);
+    };
+
+
+    rec.onend = () => {
+
+        if (micBtn) {
+            micBtn.innerText = '🎤';
+        }
+
+    };
+
+}
+
+
+// Microphone button
+if (micBtn) {
+
+    micBtn.onclick = () => {
+
+        if (!rec) {
+
+            alert(
+                "Speech recognition is not supported in this browser."
+            );
+
+            return;
+        }
+
+
+        rec.start();
+
+        micBtn.innerText =
+            'LISTENING...';
+    };
+
+}
+
+
+// ======================================================
+// 6. TEXT TO SPEECH
+// ======================================================
 
 let voices = [];
 
 
 function loadVoices() {
 
-    voices = speechSynthesis.getVoices();
+    voices =
+        speechSynthesis.getVoices();
 }
 
 
 loadVoices();
 
-speechSynthesis.onvoiceschanged = loadVoices;
+speechSynthesis.onvoiceschanged =
+    loadVoices;
 
 
 function speak(t) {
 
-    const u = new SpeechSynthesisUtterance(t);
+    const u =
+        new SpeechSynthesisUtterance(t);
+
 
     u.rate = 1.05;
+
     u.pitch = 0.85;
 
-    const v = voices.find(v =>
-        v.lang.startsWith('en')
-    );
+
+    const v =
+        voices.find(v =>
+            v.lang.startsWith('en')
+        );
+
 
     if (v) {
+
         u.voice = v;
     }
+
 
     speechSynthesis.speak(u);
 }
 
 
-// ===== 6. TEXT SEND BUTTON =====
+// ======================================================
+// 7. TEXT SEND BUTTON
+// ======================================================
 
-document.getElementById('send').onclick = () => {
-
-    const t = input.value.trim();
-
-    if (!t) return;
-
-    add('YOU: ' + t, 'user');
-
-    input.value = '';
-
-    askGemini(t);
-};
+const sendBtn =
+    document.getElementById('send');
 
 
-// ===== 7. ADD MESSAGE TO CHAT =====
+if (sendBtn) {
+
+    sendBtn.onclick = () => {
+
+        const t =
+            input.value.trim();
+
+
+        if (!t) return;
+
+
+        add(
+            "YOU: " + t,
+            "user"
+        );
+
+
+        input.value = "";
+
+
+        // 🧠 SAVE USER MESSAGE
+        saveToBrain(
+            "user",
+            t
+        );
+
+
+        askGemini(t);
+    };
+
+}
+
+
+// ======================================================
+// 8. ADD MESSAGE TO CHAT
+// ======================================================
 
 function add(t, w) {
 
-    const d = document.createElement('div');
+    const d =
+        document.createElement('div');
 
-    d.className = 'msg ' + w;
+
+    d.className =
+        'msg ' + w;
+
 
     d.innerText = t;
 
+
     chat.appendChild(d);
 
-    chat.scrollTop = chat.scrollHeight;
-        }
+
+    chat.scrollTop =
+        chat.scrollHeight;
+}
+
+
+// ======================================================
+// 9. START J.A.R.V.I.S BRAIN
+// ======================================================
+
+window.addEventListener(
+    "load",
+    () => {
+
+        restoreBrain();
+
+        console.log(
+            "🧠 J.A.R.V.I.S Brain online."
+        );
+
+    }
+);
